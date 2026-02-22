@@ -1,0 +1,209 @@
+openapi: 3.0.3
+info:
+  title: SkyHigh Core API
+  version: 1.0.0
+
+paths:
+  /flights:
+    get:
+      summary: List flights
+      responses:
+        '200':
+          description: List of flights
+  /flights/{flightId}:
+    get:
+      summary: Get flight by ID
+      parameters:
+        - name: flightId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Flight details
+        '404':
+          description: Not found
+  /flights/{flightId}/seats:
+    get:
+      summary: Get seat map
+      parameters:
+        - name: flightId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Seats with availability
+  /flights/{flightId}/seats/{seatId}/hold:
+    post:
+      summary: Hold a seat
+      parameters:
+        - name: flightId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: seatId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passengerId:
+                  type: string
+      responses:
+        '200':
+          description: Reservation created
+        '409':
+          description: Seat unavailable
+  /reservations/{reservationId}/confirm:
+    post:
+      summary: Confirm seat
+      parameters:
+        - name: reservationId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passengerId:
+                  type: string
+      responses:
+        '200':
+          description: Confirmed
+        '410':
+          description: Hold expired
+  /reservations/{reservationId}/cancel:
+    post:
+      summary: Cancel confirmed reservation
+      parameters:
+        - name: reservationId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passengerId:
+                  type: string
+      responses:
+        '204':
+          description: Cancelled
+  /checkin/start:
+    post:
+      summary: Start check-in
+      parameters:
+        - name: flightId
+          in: query
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passengerId:
+                  type: string
+                seatId:
+                  type: integer
+      responses:
+        '200':
+          description: Check-in started
+  /checkin/{checkInId}/baggage:
+    post:
+      summary: Add baggage
+      parameters:
+        - name: checkInId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passengerId:
+                  type: string
+                baggageId:
+                  type: string
+      responses:
+        '200':
+          description: Baggage added (or AWAITING_PAYMENT if overweight)
+  /checkin/{checkInId}/payment:
+    post:
+      summary: Complete payment for overweight baggage
+      parameters:
+        - name: checkInId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passengerId:
+                  type: string
+                paymentRef:
+                  type: string
+      responses:
+        '200':
+          description: Check-in completed
+  /flights/{flightId}/waitlist:
+    post:
+      summary: Join waitlist
+      parameters:
+        - name: flightId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passengerId:
+                  type: string
+      responses:
+        '200':
+          description: Joined waitlist
+    get:
+      summary: Get waitlist status
+      parameters:
+        - name: flightId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: passengerId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Waitlist entry status

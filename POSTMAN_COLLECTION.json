@@ -1,0 +1,424 @@
+{
+  "info": {
+    "name": "SkyHigh Core - E2E Workflow",
+    "_postman_id": "skyhigh-core-e2e-001",
+    "description": "End-to-end Postman workflow for SkyHigh Core Digital Check-In System.\n\nRun order (Collection Runner): 1, 2, 3, 4, 5, 6. Variables chain between requests.\n\nFlows:\n- 1: List flights, get flight, get seat map\n- 2: Hold seat, confirm reservation\n- 3: Start check-in, add baggage, complete payment, get status\n- 4: Join waitlist, get waitlist status\n- 5: Cancel reservation\n- 6: Error cases\n\nPrerequisites: Start app with mvn spring-boot:run -Dspring-boot.run.profiles=dev\nBase URL: http://localhost:8080",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key": "baseUrl", "value": "http://localhost:8080"},
+    {"key": "flightId", "value": "1"},
+    {"key": "seatId", "value": "1"},
+    {"key": "seatIdForCheckin", "value": "2"},
+    {"key": "passengerId", "value": "passenger-e2e-001"},
+    {"key": "reservationId", "value": ""},
+    {"key": "checkInId", "value": ""}
+  ],
+  "item": [
+    {
+      "name": "1. Flight & Seat Map",
+      "item": [
+        {
+          "name": "List Flights",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Response has flights', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json).to.be.an('array');",
+                  "    if (json.length > 0) { pm.collectionVariables.set('flightId', json[0].id); }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/flights"
+          }
+        },
+        {
+          "name": "Get Flight by ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Flight has id', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.id).to.eql(parseInt(pm.collectionVariables.get('flightId')));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/flights/{{flightId}}"
+          }
+        },
+        {
+          "name": "Get Seat Map",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Seat map has seats', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.seats).to.be.an('array');",
+                  "    var available = json.seats.filter(function(s) { return s.state === 'AVAILABLE'; });",
+                  "    if (available.length > 0) { pm.collectionVariables.set('seatId', available[0].id); }",
+                  "    if (available.length > 1) { pm.collectionVariables.set('seatIdForCheckin', available[1].id); }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/flights/{{flightId}}/seats"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Seat Hold & Confirm Flow",
+      "item": [
+        {
+          "name": "Hold Seat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Reservation created', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.state).to.eql('HELD');",
+                  "    pm.collectionVariables.set('reservationId', json.id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"{{passengerId}}\"}"
+            },
+            "url": "{{baseUrl}}/flights/{{flightId}}/seats/{{seatId}}/hold"
+          }
+        },
+        {
+          "name": "Confirm Reservation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Reservation confirmed', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.state).to.eql('CONFIRMED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"{{passengerId}}\"}"
+            },
+            "url": "{{baseUrl}}/reservations/{{reservationId}}/confirm"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Check-In Flow",
+      "item": [
+        {
+          "name": "Start Check-In",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Check-in started', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql('IN_PROGRESS');",
+                  "    pm.collectionVariables.set('checkInId', json.id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"{{passengerId}}\", \"seatId\": {{seatIdForCheckin}}}"
+            },
+            "url": "{{baseUrl}}/checkin/start?flightId={{flightId}}"
+          }
+        },
+        {
+          "name": "Add Baggage (Under 25kg)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Baggage added', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(['IN_PROGRESS', 'AWAITING_PAYMENT']).to.include(json.status);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"{{passengerId}}\", \"baggageId\": \"BAG-001\"}"
+            },
+            "url": "{{baseUrl}}/checkin/{{checkInId}}/baggage"
+          }
+        },
+        {
+          "name": "Add Overweight Baggage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Awaiting payment', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql('AWAITING_PAYMENT');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"{{passengerId}}\", \"baggageId\": \"overweight-BAG-002\"}"
+            },
+            "url": "{{baseUrl}}/checkin/{{checkInId}}/baggage"
+          }
+        },
+        {
+          "name": "Complete Payment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Check-in completed', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql('COMPLETED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"{{passengerId}}\", \"paymentRef\": \"PAY-REF-001\"}"
+            },
+            "url": "{{baseUrl}}/checkin/{{checkInId}}/payment"
+          }
+        },
+        {
+          "name": "Get Check-In Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Returns check-in', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.id).to.eql(parseInt(pm.collectionVariables.get('checkInId')));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/checkin/{{checkInId}}?passengerId={{passengerId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Waitlist Flow",
+      "item": [
+        {
+          "name": "Join Waitlist",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Joined waitlist', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql('PENDING');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"waitlist-passenger-001\"}"
+            },
+            "url": "{{baseUrl}}/flights/{{flightId}}/waitlist"
+          }
+        },
+        {
+          "name": "Get Waitlist Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Waitlist entry returned', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(['PENDING', 'ASSIGNED']).to.include(json.status);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/flights/{{flightId}}/waitlist?passengerId=waitlist-passenger-001"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Cancel Flow",
+      "item": [
+        {
+          "name": "Cancel Reservation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 204', function() { pm.response.to.have.status(204); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"{{passengerId}}\"}"
+            },
+            "url": "{{baseUrl}}/reservations/{{reservationId}}/cancel"
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Error Cases",
+      "item": [
+        {
+          "name": "Hold Seat - Unavailable (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 409 when seat unavailable', function() { pm.response.to.have.status(409); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"passengerId\": \"another-passenger\"}"
+            },
+            "url": "{{baseUrl}}/flights/{{flightId}}/seats/{{seatId}}/hold"
+          }
+        },
+        {
+          "name": "Get Check-In - Not Found (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 404 for non-existent check-in', function() { pm.response.to.have.status(404); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/checkin/99999?passengerId={{passengerId}}"
+          }
+        }
+      ]
+    }
+  ]
+}
