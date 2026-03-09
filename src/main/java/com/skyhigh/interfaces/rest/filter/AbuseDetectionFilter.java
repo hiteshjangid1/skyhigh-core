@@ -7,6 +7,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -19,6 +20,12 @@ import java.io.IOException;
 public class AbuseDetectionFilter extends OncePerRequestFilter {
 
     private final AbuseDetectionService abuseDetectionService;
+
+    @Value("${skyhigh.abuse.threshold-count:50}")
+    private int thresholdCount;
+
+    @Value("${skyhigh.abuse.threshold-window-seconds:2}")
+    private int retryAfterSeconds;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -37,8 +44,16 @@ public class AbuseDetectionFilter extends OncePerRequestFilter {
         } catch (AbuseDetectedException e) {
             response.setStatus(429);
             response.setContentType("application/json");
-            response.getWriter().write("{\"error\":\"Too Many Requests\",\"message\":\"" + e.getMessage() + "\"}");
+            response.setHeader("Retry-After", String.valueOf(retryAfterSeconds));
+            response.setHeader("X-RateLimit-Limit", String.valueOf(thresholdCount));
+            response.setHeader("X-RateLimit-Remaining", "0");
+            response.getWriter().write("{\"error\":\"Too Many Requests\",\"message\":\"" + escapeJson(e.getMessage()) + "\"}");
         }
+    }
+
+    private static String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
     }
 
     private String getSourceId(HttpServletRequest request) {

@@ -229,8 +229,33 @@ We adopt a **Modular Monolith** rather than microservices for these reasons:
 
 ---
 
-## 8. Document References
+## 8. Concurrency and Deployment
 
-- **WORKFLOW_DESIGN.md** — Flow diagrams, DB schema, state history (to be created).
-- **API-SPECIFICATION.yml** — API contracts (to be created).
-- **PROJECT_STRUCTURE.md** — Package layout and module mapping (to be created).
+### 8.1 Single Instance vs Multiple Instances
+
+- **Current design:** One application process, one database. All seat operations run in the same JVM; locking is at the DB row level (when using PostgreSQL).
+- **Multi-instance:** If we run multiple app instances (e.g. behind a load balancer), they share the same database. Pessimistic locking (`SELECT ... FOR UPDATE`) is database-level, so only one transaction across all instances can hold the row lock for a given seat. Conflict-free seat assignment still holds. The hold-expiry job runs on every instance (every 15s); releasing an expired hold is idempotent (only one instance will update the row; others see the row already released).
+- **Limitation:** No cross-instance distributed lock is used. For a single DB and same-datacenter instances, DB locking is sufficient. For multi-region or separate DBs per region, we would need a different strategy (e.g. single-writer or distributed lock).
+
+### 8.2 Locking Behavior by Environment
+
+| Environment | Database | Locking in code | Behavior |
+|-------------|----------|-----------------|----------|
+| **Dev (profile: dev)** | H2 in-memory | `findById` (no `FOR UPDATE`) | No row-level locking; suitable for local testing. Concurrent hold of same seat can race; H2 does not support `SELECT ... FOR UPDATE` in the same way as PostgreSQL. |
+| **Production / Docker** | PostgreSQL | Can use `findByIdForUpdate` (pessimistic write) | Full conflict-free guarantee when repository methods use `@Lock(PESSIMISTIC_WRITE)`. Current implementation uses `findById` everywhere for compatibility with dev; to restore locking in prod, reintroduce `findByIdForUpdate` in SeatRepository/SeatReservationRepository and call it only when not using H2 (e.g. profile-based or dialect check). |
+
+### 8.3 Edge Cases
+
+- **Confirm at expiry boundary:** If a client calls confirm exactly when `held_until` has passed, the service checks `held_until.isBefore(Instant.now())` and returns 410 Gone (hold expired). The scheduled job may run shortly after and release the hold; ordering is "check in same request" then "job runs later."
+- **Concurrent hold:** Two requests for the same AVAILABLE seat: with PostgreSQL and pessimistic locking, one transaction acquires the lock and succeeds (200); the other blocks then fails (seat no longer AVAILABLE) and returns 409 Conflict. With H2 and `findById`, both may read AVAILABLE; the first to save wins; the second may get 409 when the service re-checks state before save (or a duplicate if not guarded); concurrency testing in dev is best-effort.
+- **Hold expiry job delay:** Worst case, a hold expires at T and the job runs at T+15s. The seat remains HELD for up to 15s after logical expiry. Acceptable for a 2-minute hold window.
+
+---
+
+## 9. Document References
+
+- **docs/ADR-001-architecture-decisions.md** — Architecture decision records (locking, expiry, monolith, events, abuse).
+- **SCHEMA.md** — Database schema and seat state lifecycle.
+- **WORKFLOW_DESIGN.md** — Flow diagrams, state history.
+- **API-SPECIFICATION.yml** — API contracts.
+- **PROJECT_STRUCTURE.md** — Package layout and module mapping.

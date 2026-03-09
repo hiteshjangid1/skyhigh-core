@@ -19,6 +19,8 @@ import org.springframework.cache.concurrent.ConcurrentMapCache;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -44,7 +46,7 @@ class SeatServiceTest {
 
     @BeforeEach
     void setUp() {
-        seatService = new SeatService(seatRepository, reservationRepository, eventPublisher, cacheManager);
+        seatService = new SeatService(seatRepository, reservationRepository, eventPublisher, cacheManager, new SimpleMeterRegistry());
         ReflectionTestUtils.setField(seatService, "holdDurationSeconds", 120);
         when(cacheManager.getCache("seatMap")).thenReturn(new ConcurrentMapCache("seatMap"));
     }
@@ -57,7 +59,7 @@ class SeatServiceTest {
                 .seatNumber("1A")
                 .state(SeatState.AVAILABLE)
                 .build();
-        when(seatRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(seat));
+        when(seatRepository.findById(1L)).thenReturn(Optional.of(seat));
         when(seatRepository.save(any())).thenAnswer(i -> i.getArgument(0));
         when(reservationRepository.save(any())).thenAnswer(i -> i.getArgument(0));
 
@@ -75,7 +77,7 @@ class SeatServiceTest {
                 .flightId(100L)
                 .state(SeatState.HELD)
                 .build();
-        when(seatRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(seat));
+        when(seatRepository.findById(1L)).thenReturn(Optional.of(seat));
 
         assertThrows(SeatUnavailableException.class, () ->
                 seatService.holdSeat(100L, 1L, "passenger1"));
@@ -83,7 +85,7 @@ class SeatServiceTest {
 
     @Test
     void holdSeat_whenSeatNotFound_throws() {
-        when(seatRepository.findByIdForUpdate(999L)).thenReturn(Optional.empty());
+        when(seatRepository.findById(999L)).thenReturn(Optional.empty());
 
         assertThrows(SeatUnavailableException.class, () ->
                 seatService.holdSeat(100L, 999L, "passenger1"));
@@ -92,7 +94,7 @@ class SeatServiceTest {
     @Test
     void holdSeat_whenWrongFlight_throws() {
         Seat seat = Seat.builder().id(1L).flightId(200L).state(SeatState.AVAILABLE).build();
-        when(seatRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(seat));
+        when(seatRepository.findById(1L)).thenReturn(Optional.of(seat));
 
         assertThrows(InvalidStateException.class, () ->
                 seatService.holdSeat(100L, 1L, "passenger1"));
@@ -109,8 +111,8 @@ class SeatServiceTest {
                 .heldUntil(Instant.now().plusSeconds(60))
                 .build();
         Seat seat = Seat.builder().id(10L).flightId(100L).state(SeatState.HELD).build();
-        when(reservationRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(reservation));
-        when(seatRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(seat));
+        when(reservationRepository.findById(1L)).thenReturn(Optional.of(reservation));
+        when(seatRepository.findById(10L)).thenReturn(Optional.of(seat));
         when(seatRepository.save(any())).thenAnswer(i -> i.getArgument(0));
         when(reservationRepository.save(any())).thenAnswer(i -> i.getArgument(0));
 
@@ -131,7 +133,7 @@ class SeatServiceTest {
                 .heldUntil(Instant.now().minusSeconds(1))
                 .build();
         Seat seat = Seat.builder().id(10L).state(SeatState.HELD).build();
-        when(reservationRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findById(1L)).thenReturn(Optional.of(reservation));
         when(seatRepository.findById(10L)).thenReturn(Optional.of(seat));
         when(seatRepository.save(any())).thenAnswer(i -> i.getArgument(0));
         when(reservationRepository.save(any())).thenAnswer(i -> i.getArgument(0));
@@ -147,7 +149,7 @@ class SeatServiceTest {
                 .state(SeatState.HELD)
                 .heldUntil(Instant.now().plusSeconds(60))
                 .build();
-        when(reservationRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findById(1L)).thenReturn(Optional.of(reservation));
 
         assertThrows(InvalidStateException.class, () -> seatService.confirmSeat(1L, "p2"));
     }
@@ -160,7 +162,7 @@ class SeatServiceTest {
                 .state(SeatState.CONFIRMED)
                 .heldUntil(Instant.now().plusSeconds(60))
                 .build();
-        when(reservationRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findById(1L)).thenReturn(Optional.of(reservation));
 
         assertThrows(InvalidStateException.class, () -> seatService.confirmSeat(1L, "p1"));
     }
@@ -175,8 +177,8 @@ class SeatServiceTest {
                 .state(SeatState.CONFIRMED)
                 .build();
         Seat seat = Seat.builder().id(10L).flightId(100L).state(SeatState.CONFIRMED).build();
-        when(reservationRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(reservation));
-        when(seatRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(seat));
+        when(reservationRepository.findById(1L)).thenReturn(Optional.of(reservation));
+        when(seatRepository.findById(10L)).thenReturn(Optional.of(seat));
         when(seatRepository.save(any())).thenAnswer(i -> i.getArgument(0));
         when(reservationRepository.save(any())).thenAnswer(i -> i.getArgument(0));
 
@@ -195,9 +197,41 @@ class SeatServiceTest {
                 .passengerId("p1")
                 .state(SeatState.HELD)
                 .build();
-        when(reservationRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findById(1L)).thenReturn(Optional.of(reservation));
 
         assertThrows(InvalidStateException.class, () -> seatService.cancelSeat(1L, "p1", 100L));
+    }
+
+    /** Hold-expiry edge case: confirm when held_until is in the past throws HoldExpiredException (410). */
+    @Test
+    void confirmSeat_whenHeldUntilInPast_throwsHoldExpired() {
+        SeatReservation pastReservation = SeatReservation.builder()
+                .id(2L)
+                .seatId(11L)
+                .flightId(100L)
+                .passengerId("p2")
+                .state(SeatState.HELD)
+                .heldUntil(Instant.now().minusSeconds(10))
+                .build();
+        Seat seat = Seat.builder().id(11L).state(SeatState.HELD).build();
+        when(reservationRepository.findById(2L)).thenReturn(Optional.of(pastReservation));
+        when(seatRepository.findById(11L)).thenReturn(Optional.of(seat));
+        when(seatRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+        when(reservationRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+
+        assertThrows(HoldExpiredException.class, () -> seatService.confirmSeat(2L, "p2"));
+    }
+
+    /** Hold-expiry edge case: releaseExpiredHolds only releases reservations whose held_until is strictly before the passed-in instant. */
+    @Test
+    void releaseExpiredHolds_doesNotReleaseFutureHolds() {
+        when(reservationRepository.findExpiredHolds(any())).thenReturn(List.of());
+
+        seatService.releaseExpiredHolds();
+
+        verify(seatRepository, never()).save(any());
+        verify(reservationRepository, never()).save(any());
+        verify(eventPublisher, never()).publishEvent(any());
     }
 
     @Test

@@ -7,8 +7,10 @@ import com.skyhigh.infrastructure.persistence.flight.FlightRepository;
 import com.skyhigh.infrastructure.persistence.seat.SeatRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import com.skyhigh.TestConfig;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
@@ -22,7 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@org.junit.jupiter.api.Disabled("Slow; run with PostgreSQL for full E2E")
+@Import(TestConfig.class)
 class SeatControllerIntegrationTest {
 
     @Autowired
@@ -69,7 +71,6 @@ class SeatControllerIntegrationTest {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("H2 does not support PESSIMISTIC_WRITE")
     void holdSeat_succeeds() throws Exception {
         mockMvc.perform(post("/flights/{flightId}/seats/{seatId}/hold", flightId, seatId)
                         .contentType(MediaType.APPLICATION_JSON)

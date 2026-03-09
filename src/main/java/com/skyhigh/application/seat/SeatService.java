@@ -19,6 +19,9 @@ import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+
 import java.time.Instant;
 import java.util.List;
 
@@ -31,6 +34,7 @@ public class SeatService {
     private final SeatReservationRepository reservationRepository;
     private final ApplicationEventPublisher eventPublisher;
     private final CacheManager cacheManager;
+    private final MeterRegistry meterRegistry;
 
     @Value("${skyhigh.seat.hold-duration-seconds:120}")
     private int holdDurationSeconds;
@@ -65,7 +69,9 @@ public class SeatService {
                 .heldAt(now)
                 .heldUntil(heldUntil)
                 .build();
-        return reservationRepository.save(reservation);
+        SeatReservation saved = reservationRepository.save(reservation);
+        Counter.builder("seat_holds_total").register(meterRegistry).increment();
+        return saved;
     }
 
     @Transactional

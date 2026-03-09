@@ -34,6 +34,8 @@ class WaitlistServiceTest {
     private SeatReservationRepository reservationRepository;
     @Mock
     private FlightRepository flightRepository;
+    @Mock
+    private WaitlistNotificationSender notificationSender;
 
     private WaitlistService waitlistService;
 
@@ -41,7 +43,7 @@ class WaitlistServiceTest {
     void setUp() {
         waitlistService = new WaitlistService(
                 waitlistRepository, seatRepository, seatService,
-                reservationRepository, flightRepository);
+                reservationRepository, flightRepository, notificationSender);
     }
 
     @Test

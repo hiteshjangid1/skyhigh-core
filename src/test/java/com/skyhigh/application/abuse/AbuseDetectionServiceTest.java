@@ -11,6 +11,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -27,7 +29,7 @@ class AbuseDetectionServiceTest {
 
     @BeforeEach
     void setUp() {
-        abuseDetectionService = new AbuseDetectionService(accessLogRepository, abuseEventRepository);
+        abuseDetectionService = new AbuseDetectionService(accessLogRepository, abuseEventRepository, new SimpleMeterRegistry());
         ReflectionTestUtils.setField(abuseDetectionService, "thresholdCount", 50);
         ReflectionTestUtils.setField(abuseDetectionService, "thresholdWindowSeconds", 2);
     }

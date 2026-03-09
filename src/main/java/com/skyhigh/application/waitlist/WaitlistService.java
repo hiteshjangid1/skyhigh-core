@@ -29,6 +29,7 @@ public class WaitlistService {
     private final SeatService seatService;
     private final SeatReservationRepository reservationRepository;
     private final FlightRepository flightRepository;
+    private final WaitlistNotificationSender notificationSender;
 
     @Transactional
     public WaitlistEntry joinWaitlist(Long flightId, String passengerId) {
@@ -69,6 +70,7 @@ public class WaitlistService {
             next.setAssignedAt(Instant.now());
             waitlistRepository.save(next);
             log.info("Assigned seat {} to waitlisted passenger {} for flight {}", seatId, next.getPassengerId(), flightId);
+            notificationSender.notifyAssigned(next, reservation.getId());
         } catch (Exception e) {
             log.warn("Failed to assign seat {} to waitlist: {}", seatId, e.getMessage());
         }

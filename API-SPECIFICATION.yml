@@ -2,6 +2,35 @@ openapi: 3.0.3
 info:
   title: SkyHigh Core API
   version: 1.0.0
+  description: |
+    Backend for SkyHigh Airlines self-check-in. Covers seat lifecycle (hold, confirm, cancel),
+    check-in with baggage, waitlist, and abuse detection. See README for behavior and security.
+
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [timestamp, status, error, message, path]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Server time when the error occurred.
+        status:
+          type: integer
+          description: HTTP status code.
+        error:
+          type: string
+          description: HTTP reason phrase (e.g. "Conflict", "Gone").
+        message:
+          type: string
+          description: Human-readable error detail.
+        path:
+          type: string
+          description: Request path that caused the error.
+        code:
+          type: string
+          description: Optional machine-readable code (e.g. SEAT_UNAVAILABLE).
 
 paths:
   /flights:
@@ -10,6 +39,12 @@ paths:
       responses:
         '200':
           description: List of flights
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /flights/{flightId}:
     get:
       summary: Get flight by ID
@@ -24,9 +59,23 @@ paths:
           description: Flight details
         '404':
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /flights/{flightId}/seats:
     get:
       summary: Get seat map
+      description: |
+        Returns seats for the flight with availability. Protected by abuse detection:
+        if the same source (e.g. IP) accesses too many distinct flight seat maps in a short window,
+        the response is 429 Too Many Requests with Retry-After header.
       parameters:
         - name: flightId
           in: path
@@ -35,10 +84,42 @@ paths:
             type: integer
       responses:
         '200':
-          description: Seats with availability
+          description: Seats with availability (state per seat)
+        '404':
+          description: Flight not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too Many Requests - abusive access pattern detected. Use Retry-After header to know when to retry.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+              description: Seconds after which the client may retry.
+            X-RateLimit-Limit:
+              schema: { type: integer }
+              description: Threshold (e.g. 50 distinct flights in window).
+            X-RateLimit-Remaining:
+              schema: { type: integer }
+              description: 0 when rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /flights/{flightId}/seats/{seatId}/hold:
     post:
       summary: Hold a seat
+      description: |
+        Reserves the seat for the passenger for a limited time (default 2 minutes).
+        Concurrency: If two requests target the same AVAILABLE seat, one succeeds with 200
+        and one fails with 409 Conflict (seat unavailable or already held).
       parameters:
         - name: flightId
           in: path
@@ -51,21 +132,45 @@ paths:
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [passengerId]
               properties:
                 passengerId:
                   type: string
+                  minLength: 1
+                  maxLength: 100
       responses:
         '200':
-          description: Reservation created
+          description: Reservation created (state HELD; heldUntil in response)
+        '400':
+          description: Invalid request (e.g. missing or invalid passengerId)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Seat unavailable
+          description: Seat unavailable or already held (conflict)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /reservations/{reservationId}/confirm:
     post:
       summary: Confirm seat
+      description: |
+        Confirms a HELD reservation. Must be called before hold expires.
+        Concurrency: Only the passenger who holds the reservation can confirm; otherwise 400.
+        If the hold has expired, returns 410 Gone.
       parameters:
         - name: reservationId
           in: path
@@ -73,18 +178,44 @@ paths:
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [passengerId]
               properties:
                 passengerId:
                   type: string
+                  minLength: 1
+                  maxLength: 100
       responses:
         '200':
-          description: Confirmed
+          description: Confirmed (state CONFIRMED)
+        '400':
+          description: Bad request (e.g. wrong passenger, reservation not in HELD state)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Reservation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '410':
-          description: Hold expired
+          description: Hold expired - seat hold has expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /reservations/{reservationId}/cancel:
     post:
       summary: Cancel confirmed reservation
@@ -95,16 +226,38 @@ paths:
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [passengerId]
               properties:
                 passengerId:
                   type: string
+                  minLength: 1
+                  maxLength: 100
       responses:
         '204':
           description: Cancelled
+        '400':
+          description: Bad request (e.g. wrong passenger, not confirmed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Reservation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /checkin/start:
     post:
       summary: Start check-in
@@ -115,18 +268,40 @@ paths:
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [passengerId, seatId]
               properties:
                 passengerId:
                   type: string
+                  minLength: 1
+                  maxLength: 100
                 seatId:
                   type: integer
       responses:
         '200':
-          description: Check-in started
+          description: Check-in started (status IN_PROGRESS)
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Seat unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /checkin/{checkInId}/baggage:
     post:
       summary: Add baggage
@@ -137,18 +312,42 @@ paths:
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [passengerId, baggageId]
               properties:
                 passengerId:
                   type: string
+                  minLength: 1
+                  maxLength: 100
                 baggageId:
                   type: string
+                  minLength: 1
+                  maxLength: 100
       responses:
         '200':
-          description: Baggage added (or AWAITING_PAYMENT if overweight)
+          description: Baggage added (status may become AWAITING_PAYMENT if overweight)
+        '400':
+          description: Bad request or check-in already completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Check-in not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /checkin/{checkInId}/payment:
     post:
       summary: Complete payment for overweight baggage
@@ -159,21 +358,46 @@ paths:
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [passengerId, paymentRef]
               properties:
                 passengerId:
                   type: string
+                  minLength: 1
+                  maxLength: 100
                 paymentRef:
                   type: string
+                  minLength: 1
+                  maxLength: 100
       responses:
         '200':
-          description: Check-in completed
+          description: Check-in completed (or still in progress if no unpaid baggage)
+        '400':
+          description: Bad request or not awaiting payment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Check-in not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /flights/{flightId}/waitlist:
     post:
       summary: Join waitlist
+      description: Assignment is asynchronous; poll GET with same flightId and passengerId to see status ASSIGNED when a seat is assigned.
       parameters:
         - name: flightId
           in: path
@@ -181,16 +405,38 @@ paths:
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [passengerId]
               properties:
                 passengerId:
                   type: string
+                  minLength: 1
+                  maxLength: 100
       responses:
         '200':
-          description: Joined waitlist
+          description: Joined waitlist (status PENDING)
+        '400':
+          description: Bad request or already on waitlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Flight not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     get:
       summary: Get waitlist status
       parameters:
@@ -206,4 +452,48 @@ paths:
             type: string
       responses:
         '200':
-          description: Waitlist entry status
+          description: Waitlist entry status (PENDING or ASSIGNED)
+        '404':
+          description: No waitlist entry found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/abuse/events:
+    get:
+      summary: List abuse events (audit)
+      description: Returns recorded abuse events. Auth for admin endpoints is TBD; currently unauthenticated.
+      parameters:
+        - name: sourceId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by source (e.g. IP).
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Return events detected after this time (ISO-8601).
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: List of abuse events
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

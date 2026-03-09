@@ -4,6 +4,8 @@ import com.skyhigh.domain.abuse.entity.AccessLog;
 import com.skyhigh.domain.abuse.entity.AbuseEvent;
 import com.skyhigh.infrastructure.persistence.abuse.AccessLogRepository;
 import com.skyhigh.infrastructure.persistence.abuse.AbuseEventRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -17,6 +19,7 @@ public class AbuseDetectionService {
 
     private final AccessLogRepository accessLogRepository;
     private final AbuseEventRepository abuseEventRepository;
+    private final MeterRegistry meterRegistry;
 
     @Value("${skyhigh.abuse.threshold-count:50}")
     private int thresholdCount;
@@ -48,6 +51,7 @@ public class AbuseDetectionService {
                     .detectedAt(Instant.now())
                     .build();
             abuseEventRepository.save(event);
+            Counter.builder("abuse_events_total").register(meterRegistry).increment();
             throw new AbuseDetectedException("Abusive access pattern detected. Access temporarily restricted.");
         }
     }
