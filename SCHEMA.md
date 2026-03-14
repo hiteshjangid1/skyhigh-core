@@ -1,6 +1,8 @@
 # Database Schema and State Lifecycle
 
-This document describes the database tables, columns, constraints, indexes, and the semantics of seat state and hold management. See migrations in `src/main/resources/db/migration/`.
+This document describes the database tables, columns, constraints, indexes, and the semantics of seat state and hold management. The schema is designed to **support the full seat lifecycle** (AVAILABLE → HELD → CONFIRMED; hold expiry via `held_until` and scheduled job; cancellation and waitlist assignment) and related flows (check-in, baggage, waitlist, abuse detection).
+
+**Migrations:** Flyway scripts live in **`src/main/resources/db/migration/`**. Naming: `V1__description.sql`, `V2__description.sql`, etc. (e.g. `V1__create_flights_seats.sql`, `V2__create_seat_reservations.sql`). Do not modify or delete already-applied migration files; add new `Vn__...` for schema changes.
 
 ---
 
@@ -57,6 +59,8 @@ This document describes the database tables, columns, constraints, indexes, and 
 
 State is updated by application logic (hold, confirm, cancel, expiry job). There are no CHECK constraints on `state` in the current migrations; see "Data integrity" section.
 
+**Example values:** flight_id=1, seat_number='1A', row_number=1, column_letter='A', state='AVAILABLE'.
+
 ---
 
 ## Seat Reservations
@@ -83,7 +87,9 @@ State is updated by application logic (hold, confirm, cancel, expiry job). There
 - **held_until:** For HELD reservations, this is `held_at + hold_duration_seconds` (configurable, default 120). The scheduled job selects rows with `state = 'HELD'` and `held_until < NOW()` and releases them (seat → AVAILABLE, reservation → CANCELLED).
 - **State lifecycle:** HELD → CONFIRMED (passenger confirms in time); HELD → CANCELLED (expiry or cancel before confirm); CONFIRMED → CANCELLED (passenger cancels).
 
-Integrity (one active reservation per seat, valid state transitions) is enforced in application code. Database-level CHECK constraints for state values are optional (see FEEDBACK_ANALYSIS_AND_TASKS.md Theme I).
+**Example:** seat_id=1, flight_id=1, passenger_id='pax-001', state='HELD', held_at=NOW(), held_until=NOW()+120.
+
+Integrity (one active reservation per seat, valid state transitions) is enforced in application code. Database-level CHECK constraints for state values are optional.
 
 ---
 
@@ -143,7 +149,8 @@ Integrity (one active reservation per seat, valid state transitions) is enforced
 
 ## Data Integrity (Application vs Database)
 
-- **Foreign keys** are enforced at the DB level (flight_id, seat_id, etc.).
-- **Uniqueness** of (flight_id, seat_number) is enforced at the DB level.
-- **State values** and **valid transitions** (e.g. only HELD can become CONFIRMED; only CONFIRMED can be cancelled) are enforced in **application code** (SeatService, CheckInService). There are no CHECK constraints on `seats.state` or `seat_reservations.state` in the current migrations.
-- **Rationale:** Allows flexibility (e.g. adding a new state or transition) without a migration; application is the single writer. For stricter guarantees, a future migration could add CHECK constraints (e.g. `state IN ('AVAILABLE','HELD','CONFIRMED')` for seats).
+- **Foreign keys** are enforced at the DB level: flight_id → flights(id), seat_id → seats(id), check_in_id → check_ins(id), etc. Orphaned rows cannot be created.
+- **Uniqueness:** (flight_id, seat_number) is UNIQUE on seats. One PENDING waitlist entry per (flight_id, passenger_id) is enforced in application code (duplicate join returns 400/409).
+- **State values and transitions** are enforced in **application code** (SeatService, CheckInService). Examples: only HELD can become CONFIRMED; only CONFIRMED can be cancelled; seat state must match reservation state. There are no CHECK constraints on `seats.state` or `seat_reservations.state` in the current migrations.
+- **One active reservation per seat:** At most one reservation per seat with state in (HELD, CONFIRMED); hold/confirm logic and (with PostgreSQL) pessimistic locking ensure this. The expiry job and cancel set old reservations to CANCELLED before the seat becomes AVAILABLE.
+- **Rationale:** Application as single writer allows new states/transitions without a migration. For stricter guarantees, add CHECK constraints in a future migration (e.g. `state IN ('AVAILABLE','HELD','CONFIRMED')` for seats).

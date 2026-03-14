@@ -1,36 +1,70 @@
 # Testing
 
-## Unit Tests
+## Running Tests
 
-Run all tests:
-
+**Full suite:**
 ```bash
 mvn test
 ```
 
-Coverage report (JaCoCo): **`target/jacoco-report/index.html`** (open after `mvn test`). A summary is in **COVERAGE_REPORT.md**. The build enforces at least **80% line coverage** on the `com.skyhigh.application` service packages (seat, checkin, waitlist, abuse).
+**By package (Maven Surefire):** Run only tests in a given package, e.g.:
+```bash
+mvn test -Dtest=com.skyhigh.application.seat.**.*Test
+mvn test -Dtest=*SeatServiceTest
+```
 
-### By Area
+**By tag (JUnit 5):** If tests are tagged (e.g. `@Tag("integration")`), run only unit tests by excluding integration: `mvn test -Dgroups=unit` (if groups are configured in surefire). Check `pom.xml` for `groups` / `excludedGroups` configuration.
 
-| Area | Test Class | Notes |
-|------|------------|--------|
-| **Seat lifecycle** | `SeatServiceTest` | Hold, confirm, cancel, release expired holds. |
-| **Hold-expiry edge cases** | `SeatServiceTest` | `confirmSeat_whenExpired_throws`, `confirmSeat_whenHeldUntilInPast_throwsHoldExpired`, `releaseExpiredHolds_releasesAndPublishesEvent`, `releaseExpiredHolds_doesNotReleaseFutureHolds`. |
-| **Check-in** | `CheckInServiceTest` | Start check-in, add baggage, complete payment, get check-in. |
-| **Waitlist** | `WaitlistServiceTest` | Join, get status, onSeatReleased assigns to next passenger. |
-| **Abuse detection** | `AbuseDetectionServiceTest` | recordAccess, checkAbuse below/at/above threshold. |
+Tests run with the **test** profile by default; they use **H2** and mocks. No Docker or external services required for `mvn test`.
 
-### Concurrency and Hold-Expiry Tests
+---
 
-- **Hold-expiry:** `SeatServiceTest.confirmSeat_whenExpired_throws`, `confirmSeat_whenHeldUntilInPast_throwsHoldExpired`, `releaseExpiredHolds_releasesAndPublishesEvent`, `releaseExpiredHolds_doesNotReleaseFutureHolds` assert that expired holds are rejected (410) and that the scheduled job only releases past holds.
-- **Concurrency (single-winner):** With **PostgreSQL** and pessimistic locking, concurrent hold attempts on the same seat would guarantee only one succeeds. With **H2** and `findById` (no lock), the integration test `SeatControllerIntegrationTest` in `src/test/java/com/skyhigh/interfaces/rest/SeatControllerIntegrationTest.java` runs seat map and hold flows; it does not assert concurrent single-winner (that would require a multi-threaded test or load test with PostgreSQL). See ARCHITECTURE_DESIGN.md §8 for locking behavior by environment.
+## Unit Tests
 
-Unit tests use **mocks** and **H2** where applicable; they do not prove cross-request concurrency. For that, run the integration test with PostgreSQL or a load test (see README / LOAD_TESTING.md).
+### Coverage
+
+- **Report (JaCoCo):** Generated at **`target/jacoco-report/index.html`**. Open in a browser after `mvn test`. CSV: `target/jacoco-report/jacoco.csv`.
+- **Interpretation:** Line coverage shows which lines were executed. The build enforces **at least 80% line coverage** on `com.skyhigh.application` packages (seat, checkin, waitlist, abuse). See **COVERAGE_REPORT.md** for a summary and how to fix coverage gaps.
+- **Exclusions:** Often test code, main method, DTOs, and config are excluded from coverage; check `pom.xml` JaCoCo configuration.
+
+### Test Classes and What They Cover
+
+| Test Class | Package / path | Coverage |
+|------------|----------------|----------|
+| **SeatServiceTest** | application/seat | Hold, confirm, cancel, releaseExpiredHolds; expired hold returns exception (410); job releases only past holds. |
+| **CheckInServiceTest** | application/checkin | startCheckIn, addBaggage (under/over weight), completePayment, getCheckIn; status transitions IN_PROGRESS, AWAITING_PAYMENT, COMPLETED. |
+| **WaitlistServiceTest** | application/waitlist | join, getStatus; onSeatReleased assigns to oldest PENDING; duplicate join, not found. |
+| **AbuseDetectionServiceTest** | application/abuse | recordAccess, checkAbuse below/at/above threshold; 429 when threshold exceeded. |
+| **SeatControllerIntegrationTest** | interfaces/rest | Full HTTP: GET seat map, POST hold, POST confirm, POST cancel; uses embedded H2 and real controllers. |
+
+### Edge cases and concurrency — what is demonstrated
+
+| Scenario | Demonstrated by | Notes |
+|----------|-----------------|-------|
+| **Hold expiry (client confirms after expiry)** | `SeatServiceTest.confirmSeat_whenExpired_throws`, `confirmSeat_whenHeldUntilInPast_throwsHoldExpired` | Assert that confirm throws (HoldExpiredException → 410 Gone). |
+| **Hold expiry (scheduled job)** | `SeatServiceTest.releaseExpiredHolds_releasesAndPublishesEvent`, `releaseExpiredHolds_doesNotReleaseFutureHolds` | Job releases only reservations with `held_until` in the past; publishes SeatReleasedEvent; does not release future holds. |
+| **Seat conflict (409)** | Unit tests for hold/confirm when seat is unavailable; integration test hold/confirm flows | 409 when seat already HELD/CONFIRMED. |
+| **Concurrent hold (single-winner)** | **Not demonstrated** by unit or integration tests | H2 does not provide pessimistic locking. To validate single-winner under concurrency: run with **PostgreSQL** (README Option 2/3) and use a **load test** (LOAD_TESTING.md) or multi-threaded test that asserts at most one reservation per seat. See ARCHITECTURE_DESIGN.md §8. |
+| **Waitlist assignment on seat release** | `WaitlistServiceTest` (onSeatReleased assigns to oldest PENDING) | Event-driven assignment and notification hook are covered. |
+| **Abuse detection (429)** | `AbuseDetectionServiceTest` (threshold, recordAccess, checkAbuse) | Filter and 429 response are tested at service level; integration test can hit 429 with many distinct flight IDs. |
+
+**Summary:** Hold expiry behavior and 409/410 semantics are clearly covered by named unit tests. Concurrency (single-winner) is intentionally not asserted in the default test suite; use PostgreSQL and load or concurrent tests to demonstrate it.
+
+**Implementation (409/410):** SeatService throws **SeatUnavailableException** (→ 409) and **HoldExpiredException** (→ 410); GlobalExceptionHandler maps these to HTTP 409 and 410 with ErrorResponse (see API-SPECIFICATION.yml). The Postman collection includes error cases for hold unavailable (409) and expired hold (410).
+
+---
 
 ## Integration Tests
 
-- Integration tests that require PostgreSQL or Testcontainers may be disabled in the default `mvn test` run. See the test class for `@Disabled` and the comment explaining the requirement (e.g. "requires PostgreSQL for pessimistic locking").
+- **SeatControllerIntegrationTest** runs against embedded H2 and full Spring context (controllers, services, repositories). No Testcontainers by default.
+- Tests that require **PostgreSQL** or **Testcontainers** may be **@Disabled** with a comment (e.g. "requires PostgreSQL for pessimistic locking"). Enable and run with the appropriate profile or environment when validating concurrency.
+
+---
 
 ## E2E (Postman)
 
-Import `POSTMAN_COLLECTION.json` and run the collection (Collection Runner) in order. Prerequisite: start the app with `mvn spring-boot:run "-Dspring-boot.run.profiles=dev"`. Base URL: `http://localhost:8080`.
+1. **Prerequisite:** Start the app: `mvn spring-boot:run "-Dspring-boot.run.profiles=dev"`.
+2. **Import:** Open Postman → Import → select **POSTMAN_COLLECTION.json** from the project root.
+3. **Variables:** Set collection or environment variable **baseUrl** = `http://localhost:8080` (or your host/port).
+4. **Run order:** Use Collection Runner and run the collection in order: e.g. list flights → get seat map → hold seat → confirm → check-in start → add baggage → (optional) payment → waitlist join → get waitlist status → cancel → error cases (expired hold, 409, 429).
+5. **Verify:** Check status codes (200, 201, 400, 404, 409, 410, 429) and response bodies against API-SPECIFICATION.yml.

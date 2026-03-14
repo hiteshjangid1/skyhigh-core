@@ -72,15 +72,17 @@ We adopt a **Modular Monolith** rather than microservices for these reasons:
 
 ## 2. Module Decomposition
 
-| Module | Responsibility | Key Entities / Concepts |
-|--------|----------------|-------------------------|
-| **seat** | Seat lifecycle, state machine, hold/confirm/cancel, conflict resolution | Seat, SeatState, SeatReservation |
-| **checkin** | Orchestrates seat + baggage + payment flow; check-in status | CheckIn, CheckInStatus |
-| **waitlist** | Queue management, assignment on availability, notifications | WaitlistEntry |
-| **baggage** | Weight validation, fee calculation, integration with Weight service | BaggageRecord |
-| **payment** | Payment initiation and verification, integration with Payment service | PaymentRecord |
-| **flight** | Flight metadata, seat map structure | Flight, SeatMap |
-| **abuse** | Rate limiting, bot/abuse detection, audit logging | AccessLog, AbuseEvent |
+| Module | Responsibility | Key Entities / Concepts | Key Classes (application / interfaces) |
+|--------|----------------|-------------------------|----------------------------------------|
+| **seat** | Seat lifecycle, state machine, hold/confirm/cancel, conflict resolution, hold-expiry job | Seat, SeatState, SeatReservation | **SeatService** (holdSeat, confirmSeat, cancelSeat, releaseExpiredHolds); SeatRepository, SeatReservationRepository; SeatController (REST). |
+| **checkin** | Orchestrates seat + baggage + payment flow; check-in status (IN_PROGRESS, AWAITING_PAYMENT, COMPLETED, CANCELLED) | CheckIn, CheckInStatus | **CheckInService** (startCheckIn, addBaggage, completePayment, getCheckIn); CheckInController; WeightServiceClient, PaymentServiceClient (interfaces). |
+| **waitlist** | Queue management, FCFS assignment on seat release, notifications | WaitlistEntry (PENDING, ASSIGNED) | **WaitlistService** (join, getStatus, onSeatReleased); WaitlistNotificationSender (interface); WaitlistController; StubWaitlistNotificationSender. |
+| **baggage** | Weight validation, fee calculation, integration with Weight service | BaggageRecord | Logic embedded in CheckInService; BaggageRecord repository. |
+| **payment** | Payment verification, integration with Payment service | PaymentRecord (if persisted) | PaymentServiceClient (interface); called from CheckInService.completePayment. |
+| **flight** | Flight metadata, seat map structure (list of seats per flight) | Flight, SeatMap | FlightRepository; FlightController (flights list); seat map exposed via SeatController or FlightController (GET /flights/{id}/seats). |
+| **abuse** | Rate limiting, bot/abuse detection, audit logging, 429 response | AccessLog, AbuseEvent | **AbuseDetectionService** (recordAccess, checkAbuse); **AbuseDetectionFilter** (servlet filter, @Order(1)); AbuseEventRepository; GET /admin/abuse/events. |
+
+**Package mapping (see PROJECT_STRUCTURE.md):** `com.skyhigh.application.seat`, `com.skyhigh.application.checkin`, `com.skyhigh.application.waitlist`, `com.skyhigh.application.abuse`; domain entities in `com.skyhigh.domain`; REST in `com.skyhigh.interfaces.rest`; persistence in `com.skyhigh.infrastructure.persistence`.
 
 ---
 
@@ -227,6 +229,14 @@ We adopt a **Modular Monolith** rather than microservices for these reasons:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+**Deployment notes:**
+- **Application:** Single JAR (e.g. `skyhigh-core.jar`) run via `java -jar` or as Docker image. All REST, scheduled job, and event listeners run in the same process. No separate worker JAR.
+- **Database:** PostgreSQL is the primary store. Flyway runs on startup; migrations from `src/main/resources/db/migration/`. Connection string, user, and password are profile-driven (e.g. `application-docker.yml` or env vars).
+- **Redis:** Optional; used for seat map cache or distributed locking if enabled. If not configured, the app runs without Redis (e.g. dev profile).
+- **RabbitMQ:** Optional; used for durable messaging if we add cross-process consumers. Current waitlist and hold-expiry use in-process events and @Scheduled.
+- **Health:** Spring Boot Actuator exposes `/actuator/health` (DB, optional Redis). Use for readiness/liveness in Kubernetes or Docker Compose.
+- **Scaling:** Multiple app instances can run behind a load balancer; they share the same PostgreSQL. Seat conflict is resolved by DB-level pessimistic locking. Hold-expiry job runs on every instance (idempotent).
+
 ---
 
 ## 8. Concurrency and Deployment
@@ -252,10 +262,36 @@ We adopt a **Modular Monolith** rather than microservices for these reasons:
 
 ---
 
-## 9. Document References
+## 9. Architecture Decision Records (ADR)
 
-- **docs/ADR-001-architecture-decisions.md** — Architecture decision records (locking, expiry, monolith, events, abuse).
+Key architecture decisions with alternatives considered, rationale, and consequences.
+
+### Decision 1: Pessimistic Locking vs Optimistic Locking for Seat Assignment
+
+**Status:** Accepted. **Context:** Multiple passengers may attempt to hold or confirm the same seat concurrently; we need at most one successful reservation per seat. **Decision:** Use pessimistic locking (`SELECT ... FOR UPDATE` / JPA `@Lock(PESSIMISTIC_WRITE)`) on the seat row during hold and confirm. **Alternatives:** Optimistic locking (version column) — no long-held locks but retries under contention, 409 + client retry. Redis distributed lock — decouples from DB but adds TTL/consistency edge cases. **Rationale:** Correctness is mandatory; pessimistic locking gives one winner without client retries. **Consequences:** With H2 (dev), FOR UPDATE not fully supported; we use findById in dev. With PostgreSQL, full locking available. Multi-instance with one DB still guarantees single winner via DB-level lock.
+
+### Decision 2: Scheduled Job vs Redis TTL for Hold Expiry
+
+**Status:** Accepted. **Context:** Seat holds valid 120 seconds; expired holds must be released. **Decision:** Scheduled job (Spring @Scheduled, every 15 seconds) that queries reservations with state = HELD and held_until < NOW() and releases them. **Alternatives:** Redis TTL — exact expiry but dual source of truth and callback failure risk. DB trigger — not portable. **Rationale:** Single source of truth in DB; 15s overrun acceptable for 2-min window. **Consequences:** Hold duration effectively up to 2 min + 15s worst case. Job runs on every instance; idempotent release logic.
+
+### Decision 3: Modular Monolith vs Microservices
+
+**Status:** Accepted. **Context:** Need check-in backend with seat, check-in, waitlist, abuse. **Decision:** Modular monolith: one application, one database, clear module boundaries. **Alternatives:** Microservices — independent scaling but distributed transactions and eventual consistency for hold-then-confirm. **Rationale:** Strong consistency required; single deploy and simpler ops. **Consequences:** All modules share one DB and process; observability is process-scoped.
+
+### Decision 4: In-Process Events vs Message Queue for Waitlist Assignment
+
+**Status:** Accepted (MVP). **Context:** When a seat is released, next waitlisted passenger should be assigned. **Decision:** Spring ApplicationEvent (SeatReleasedEvent) and @EventListener in WaitlistService with @Async. No RabbitMQ for this flow initially. **Alternatives:** RabbitMQ — durable, multi-instance safe but extra component. **Rationale:** MVP and single-instance; in-process sufficient; waitlist assignment best-effort. **Consequences:** Event not durable; clients poll GET waitlist status. See WORKFLOW_DESIGN.md for waitlist flow.
+
+### Decision 5: Abuse Detection — Application-Level vs Gateway Rate Limiting
+
+**Status:** Accepted. **Context:** Detect and block abusive patterns (e.g. 50+ distinct seat maps in 2s from one source). **Decision:** Implement abuse detection inside the application (filter + service + DB). Return 429 with Retry-After and X-RateLimit-* headers. **Alternatives:** Gateway rate limiting — offloads work but less flexible for “distinct flight count in window”; audit may live outside app. **Rationale:** Distinct flight count in time window easier in app; we persist abuse events and expose GET /admin/abuse/events. **Consequences:** 429 includes Retry-After; audit endpoint for operators (auth TBD). See README “Rate-limiting strategy” section.
+
+---
+
+## 10. Document References
+
 - **SCHEMA.md** — Database schema and seat state lifecycle.
-- **WORKFLOW_DESIGN.md** — Flow diagrams, state history.
+- **WORKFLOW_DESIGN.md** — Flow diagrams, seat lifecycle, check-in flow, waitlist event-driven design.
+- **README.md** — Rate-limiting strategy and abuse detection (detailed).
 - **API-SPECIFICATION.yml** — API contracts.
 - **PROJECT_STRUCTURE.md** — Package layout and module mapping.
